@@ -7,18 +7,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
-ADMIN_IDS = set(int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip())
-
-if not BOT_TOKEN:
-    raise ValueError("Не найден BOT_TOKEN в .env файле!")
+ADMIN_IDS = set()
+if ADMIN_IDS_STR:
+    for x in ADMIN_IDS_STR.split(","):
+        if x.strip():
+            ADMIN_IDS.add(int(x.strip()))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 conn = sqlite3.connect("attendance.db")
-conn.execute("PRAGMA journal_mode=WAL")
 
 def init_db():
     cursor = conn.cursor()
@@ -50,10 +49,10 @@ async def cmd_start(message: types.Message):
         cursor.execute("INSERT INTO users (id, username, registered_at) VALUES (?, ?, ?)",
                        (message.from_user.id, message.from_user.username or "unknown", datetime.now().strftime("%Y-%m-%d %H:%M")))
         conn.commit()
-        await message.answer(f"Вы зарегистрированы в боте.\n"
-                             f"Преподаватель сможет отмечать ваши отсутствия.")
+        await message.answer("Вы зарегистрированы в боте.\n"
+                             "Преподаватель сможет отмечать ваши отсутствия.")
     else:
-        await message.answer(f"Вы уже зарегистрированы в системе.")
+        await message.answer("Вы уже зарегистрированы в системе.")
 
 @dp.message(Command("отсутствующие"))
 async def cmd_absent(message: types.Message):
@@ -63,7 +62,7 @@ async def cmd_absent(message: types.Message):
 
     args = message.text.split()
     if len(args) < 2:
-        await message.answer(f"Формат: `/отсутствующие @ivanov @petrov`")
+        await message.answer("Формат: `/отсутствующие @ivanov @petrov`")
         return
 
     usernames = [u.lstrip("@") for u in args[1:]]
@@ -101,10 +100,10 @@ async def cmd_my_attendance(message: types.Message):
     ).fetchall()
 
     if not records:
-        await message.answer(f"У вас нет записей об отсутствиях. Всё отлично!")
+        await message.answer("У вас нет записей об отсутствиях. Всё отлично!")
         return
 
-    text = f"Ваши пропуски:\n"
+    text = "Ваши пропуски:\n"
     for (date,) in records:
         text += f"{date} | Отсутствовал\n"
     await message.answer(text)
@@ -139,7 +138,7 @@ async def cmd_stats(message: types.Message):
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
-        f"Справка по боту посещаемости:\n\n"
+        "Справка по боту посещаемости:\n\n"
         " Студентам:\n"
         "/start — зарегистрироваться в системе\n"
         "/моя_посещаемость — посмотреть свои пропуски\n\n"
@@ -149,7 +148,7 @@ async def cmd_help(message: types.Message):
     )
 
 async def main():
-    print(f"Бот запущен.")
+    print("Бот запущен.")
     try:
         await dp.start_polling(bot)
     finally:
