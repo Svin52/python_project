@@ -1,4 +1,5 @@
 import os
+import aiosqlite
 import sqlite3
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
@@ -16,43 +17,46 @@ if ADMIN_IDS_STR:
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+conn = None
 
-conn = sqlite3.connect("attendance.db")
-
-def init_db():
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            username TEXT UNIQUE,
-            registered_at TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            date TEXT,
-            status TEXT DEFAULT 'отсутствует',
-            UNIQUE(user_id, date)  -- Защита от дублей в один день
-        )
-    ''')
-    conn.commit()
-
-init_db()
+async def init_db():
+    global conn
+    conn = await aiosqlite.connect("attendance.db")
+    async with conn.cursor() as cursor:
+        await cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY,
+                username TEXT UNIQUE,
+                registered_at TEXT
+            )
+        ''')
+        await cursor.execute('''
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                date TEXT,
+                status TEXT DEFAULT 'отсутствует',
+                UNIQUE(user_id, date)
+            )
+        ''')
+    await conn.commit()
 
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    cursor = conn.cursor()
-    if not cursor.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)).fetchone():
-        cursor.execute("INSERT INTO users (id, username, registered_at) VALUES (?, ?, ?)",
-                       (message.from_user.id, message.from_user.username or "unknown", datetime.now().strftime("%Y-%m-%d %H:%M")))
-        conn.commit()
-        await message.answer("Вы зарегистрированы в боте.\n"
-                             "Преподаватель сможет отмечать ваши отсутствия.")
-    else:
-        await message.answer("Вы уже зарегистрированы в системе.")
+    async with conn.cursor() as cursor:
+        await cursor.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,))
+        if not await cursor.fetchone():
+            await cursor.execute(
+                "INSERT INTO users (id, username, registered_at) VALUES (?, ?, ?)",
+                (message.from_user.id, message.from_user.username or "unknown", datetime.now().strftime("%Y-%m-%d %H:%M"))
+            )
+            await conn.commit()
+            await message.answer("Вы зарегистрированы в боте.\n"
+                                 "Преподаватель сможет отмечать ваши отсутствия.")
+        else:
+            await message.answer("Вы уже зарегистрированы в системе.")
+
 
 @dp.message(Command("отсутствующие"))
 async def cmd_absent(message: types.Message):
@@ -67,23 +71,25 @@ async def cmd_absent(message: types.Message):
 
     usernames = [u.lstrip("@") for u in args[1:]]
     date = datetime.now().strftime("%Y-%m-%d")
-    cursor = conn.cursor()
-
     marked, skipped, not_found = [], [], []
 
-    for uname in usernames:
-        user = cursor.execute("SELECT id FROM users WHERE username = ?", (uname,)).fetchone()
-        if not user:
-            not_found.append(uname)
-            continue
+    async with conn.cursor() as cursor:
+        for uname in usernames:
+            await cursor.execute("SELECT id FROM users WHERE username = ?", (uname,))
+            user = await cursor.fetchone()
+            if not user:
+                not_found.append(uname)
+                continue
 
-        try:
-            cursor.execute("INSERT INTO attendance (user_id, date, status) VALUES (?, ?, 'отсутствует')",
-                           (user[0], date))
-            conn.commit()
-            marked.append(uname)
-        except sqlite3.IntegrityError:
-            skipped.append(uname)
+            try:
+                await cursor.execute(
+                    "INSERT INTO attendance (user_id, date, status) VALUES (?, ?, 'отсутствует')",
+                    (user[0], date)
+                )
+                await conn.commit()
+                marked.append(uname)
+            except sqlite3.IntegrityError:
+                skipped.append(uname)
 
     text = f"Отметка отсутствующих ({date}):\n"
     if marked: text += f"Отмечены: {', '.join('@'+u for u in marked)}\n"
@@ -91,13 +97,15 @@ async def cmd_absent(message: types.Message):
     if not_found: text += f"Не в базе (не нажали /start): {', '.join('@'+u for u in not_found)}\n"
     await message.answer(text)
 
+
 @dp.message(Command("моя_посещаемость"))
 async def cmd_my_attendance(message: types.Message):
-    cursor = conn.cursor()
-    records = cursor.execute(
-        "SELECT date FROM attendance WHERE user_id = ? ORDER BY date DESC",
-        (message.from_user.id,)
-    ).fetchall()
+    async with conn.cursor() as cursor:
+        await cursor.execute(
+            "SELECT date FROM attendance WHERE user_id = ? ORDER BY date DESC",
+            (message.from_user.id,)
+        )
+        records = await cursor.fetchall()
 
     if not records:
         await message.answer("У вас нет записей об отсутствиях. Всё отлично!")
@@ -107,6 +115,7 @@ async def cmd_my_attendance(message: types.Message):
     for (date,) in records:
         text += f"{date} | Отсутствовал\n"
     await message.answer(text)
+
 
 @dp.message(Command("статистика"))
 async def cmd_stats(message: types.Message):
@@ -120,20 +129,25 @@ async def cmd_stats(message: types.Message):
         return
 
     target = args[1].lstrip("@")
-    cursor = conn.cursor()
-    user = cursor.execute("SELECT id FROM users WHERE username = ?", (target,)).fetchone()
-    if not user:
-        await message.answer("Студент не найден в базе.")
-        return
+    async with conn.cursor() as cursor:
+        await cursor.execute("SELECT id FROM users WHERE username = ?", (target,))
+        user = await cursor.fetchone()
+        if not user:
+            await message.answer("Студент не найден в базе.")
+            return
 
-    absent_count = cursor.execute("SELECT COUNT(*) FROM attendance WHERE user_id = ?", (user[0],)).fetchone()[0]
-    total_students = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        await cursor.execute("SELECT COUNT(*) FROM attendance WHERE user_id = ?", (user[0],))
+        absent_count = (await cursor.fetchone())[0]
+        
+        await cursor.execute("SELECT COUNT(*) FROM users")
+        total_students = (await cursor.fetchone())[0]
 
     await message.answer(
         f"Статистика @{target}:\n"
         f"Отсутствовал: {absent_count} раз(а)\n"
         f"Всего в системе: {total_students} чел."
     )
+
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
@@ -147,13 +161,16 @@ async def cmd_help(message: types.Message):
         "/статистика @ivanov — количество пропусков студента\n\n"
     )
 
+
 async def main():
     print("Бот запущен.")
+    await init_db() 
     try:
         await dp.start_polling(bot)
     finally:
-        conn.close()
+        await conn.close()
         print("Соединение с БД закрыто.")
+
 
 if __name__ == "__main__":
     import asyncio
